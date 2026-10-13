@@ -1,0 +1,473 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model — Froyo Productivity Application
+// ===============================================================
+//
+// This security rules file enforces strict ownership and schema validation
+// for all collections in the Froyo application. All user data is strictly
+// isolated under `/users/{uid}`.
+//
+// Collection: /users/{uid}
+// Document ID: {uid} (matches Firebase Auth UID)
+// Fields:
+//   - uid: string (optional, immutable, must match {uid}) - User ID
+//   - display_name: string (optional, 1..120 chars) - User display name
+//   - email: string (optional, valid email, <= 254 chars) - User email (PII, owner-only read)
+//   - photo_url: string (optional, valid http/https URL, <= 1024 chars) - Avatar URL
+//   - created_at: timestamp or ISO date string (optional, immutable) - Account creation time
+//   - updated_at: timestamp or ISO date string (optional) - Last profile update time
+//
+// Collection: /users/{uid}/tasks/{taskId}
+// Document ID: {taskId}
+// Fields:
+//   - id: string (optional, immutable, 1..128 chars) - Document ID
+//   - uid: string (optional, immutable, must match {uid}) - Owner UID
+//   - title: string (required, 1..500 chars) - Task title
+//   - completed: bool (required) - Completion status
+//   - created_at: timestamp or ISO date string (required, immutable) - Creation timestamp
+//   - parent_id: string (1..128 chars) or null (optional) - Parent task ID for subtasks
+//   - due_date: timestamp, ISO date string (1..64 chars), or null (optional) - Due date
+//   - list_id: string (1..128 chars) or null (optional) - Associated list ID
+//   - tag_ids: list of strings (optional, max 50 items) - Associated tag IDs
+//   - priority: string (optional, enum: 'none'|'low'|'medium'|'high'|'urgent'|'') - Task priority
+//   - notes: string or null (optional, 0..10000 chars) - Task notes/details
+//   - description: string or null (optional, 0..10000 chars) - Optional task description alias
+//   - order: number (optional, -1e9..1e13) - Sort order index
+//   - updated_at: timestamp, ISO date string, or null (optional) - Last modification timestamp
+//   - completed_at: timestamp, ISO date string, or null (optional) - Completion timestamp
+//
+// Collection: /users/{uid}/lists/{listId}
+// Document ID: {listId}
+// Fields:
+//   - id: string (optional, immutable, 1..128 chars) - Document ID
+//   - uid: string (optional, immutable, must match {uid}) - Owner UID
+//   - name: string (required, 1..120 chars) - List display name
+//   - icon: string or null (optional, 0..64 chars) - Icon identifier or emoji
+//   - color: string or null (optional, 0..32 chars) - Theme/accent color for the list
+//   - created_at: timestamp or ISO date string (optional, immutable) - Creation timestamp
+//   - updated_at: timestamp, ISO date string, or null (optional) - Last modification timestamp
+//   - order: number (optional, -1e9..1e13) - Sort order index
+//   - is_default: bool (optional) - Whether this is a default system list
+//
+// Collection: /users/{uid}/tags/{tagId}
+// Document ID: {tagId}
+// Fields:
+//   - id: string (optional, immutable, 1..128 chars) - Document ID
+//   - uid: string (optional, immutable, must match {uid}) - Owner UID
+//   - name: string (required, 1..60 chars) - Tag label
+//   - color: string (required, 1..32 chars, hex e.g. #FF85A1 or token) - Tag color
+//   - created_at: timestamp or ISO date string (optional, immutable) - Creation timestamp
+//   - updated_at: timestamp, ISO date string, or null (optional) - Last modification timestamp
+//   - order: number (optional, -1e9..1e13) - Sort order index
+//
+// Collection: /users/{uid}/focus_sessions/{sessionId}
+// Document ID: {sessionId}
+// Fields:
+//   - id: string (optional, immutable, 1..128 chars) - Document ID
+//   - uid: string (optional, immutable, must match {uid}) - Owner UID
+//   - duration_minutes: number (required, > 0 and <= 1440) - Focus duration in minutes
+//   - mode: string (required, enum: 'pomodoro'|'custom'|'stopwatch') - Timer mode
+//   - started_at: timestamp or ISO date string (required, immutable) - Session start time
+//   - completed_at: timestamp or ISO date string (required) - Session completion time
+//   - task_id: string (1..128 chars) or null (optional) - Linked task ID
+//   - task_title: string (0..500 chars) or null (optional) - Snapshot of task title
+//   - mascot_id: string (1..64 chars) or null (optional) - Active mascot companion ID
+//   - notes: string (0..2000 chars) or null (optional) - Session reflection notes
+//   - created_at: timestamp or ISO date string (optional, immutable) - Record creation time
+//
+// Collection: /users/{uid}/settings/{settingId}
+// Document ID: {settingId} (e.g. 'preferences' or 'theme')
+// Fields:
+//   - id: string (optional, immutable, 1..128 chars)
+//   - uid: string (optional, immutable, must match {uid})
+//   - active_mascot: string (optional, 1..64 chars) - Selected Froyo mascot ID
+//   - theme_mode: string (optional, 1..32 chars) - 'light', 'dark', 'system', 'custom', etc.
+//   - custom_theme: map or null (optional, max 30 keys) - Custom palette overrides
+//   - daily_focus_goal_minutes: number (optional, 1..1440) - Daily focus target
+//   - pomodoro_work_minutes: number (optional, 1..240) - Work interval duration
+//   - pomodoro_short_break_minutes: number (optional, 1..120) - Short break duration
+//   - pomodoro_long_break_minutes: number (optional, 1..180) - Long break duration
+//   - sound_enabled: bool (optional) - Sound effects toggle
+//   - notifications_enabled: bool (optional) - Desktop/browser notification toggle
+//   - auto_start_breaks: bool (optional) - Auto-start break timer
+//   - auto_start_pomodoros: bool (optional) - Auto-start work timer
+//   - default_list_id: string (1..128 chars) or null (optional) - Default task list ID
+//   - created_at: timestamp or ISO date string (optional, immutable)
+//   - updated_at: timestamp or ISO date string (optional)
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if the user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Check if the authenticated user owns the path resource
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Check if user is owner based on document's uid field
+    function isDocOwner() {
+      return isAuthenticated() &&
+        (!('uid' in resource.data) || request.auth.uid == resource.data.uid);
+    }
+
+    // Verify UID hasn't been tampered with on create/write
+    function uidUnchanged(userId) {
+      return !('uid' in request.resource.data) ||
+        (request.resource.data.uid == request.auth.uid && request.resource.data.uid == userId);
+    }
+
+    // Ensure uid field is not modified on update
+    function uidNotModified() {
+      return !('uid' in request.resource.data) ||
+        (!('uid' in resource.data) && request.resource.data.uid == request.auth.uid) ||
+        request.resource.data.uid == resource.data.uid;
+    }
+
+    // Validate required fields exist on the resulting document
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // Validate that the document contains only the allowed fields (prevents schema pollution)
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Validate that immutable fields have not been modified if they already existed
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // Validate required string length
+    function validStringLength(data, field, minLen, maxLen) {
+      return data[field] is string &&
+        data[field].size() >= minLen &&
+        data[field].size() <= maxLen;
+    }
+
+    // Validate optional string (if present, must be string within [minLen, maxLen])
+    function isValidOptionalString(data, field, minLen, maxLen) {
+      return !(field in data) ||
+        (data[field] is string &&
+         data[field].size() >= minLen &&
+         data[field].size() <= maxLen);
+    }
+
+    // Validate optional nullable string (if present and non-null, must be string within [minLen, maxLen])
+    function isValidOptionalNullableString(data, field, minLen, maxLen) {
+      return !(field in data) ||
+        data[field] == null ||
+        (data[field] is string &&
+         data[field].size() >= minLen &&
+         data[field].size() <= maxLen);
+    }
+
+    // Validate optional boolean
+    function isValidOptionalBool(data, field) {
+      return !(field in data) || data[field] is bool;
+    }
+
+    // Validate optional number within [minVal, maxVal]
+    function isValidOptionalNumber(data, field, minVal, maxVal) {
+      return !(field in data) ||
+        (data[field] is number &&
+         data[field] >= minVal &&
+         data[field] <= maxVal);
+    }
+
+    // Validate URL format (must start with https:// or http:// and be <= 1024 chars)
+    function isValidUrl(url) {
+      return url is string &&
+        url.size() >= 8 &&
+        url.size() <= 1024 &&
+        (url.matches("^https://.*") || url.matches("^http://.*"));
+    }
+
+    // Validate email format
+    function isValidEmail(email) {
+      return email is string &&
+        email.size() >= 3 &&
+        email.size() <= 254 &&
+        email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // Validate ISO 8601 date/datetime string (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS...)
+    function isValidDateString(dateStr) {
+      return dateStr is string &&
+        dateStr.size() >= 10 &&
+        dateStr.size() <= 64 &&
+        dateStr.matches("^\\d{4}-\\d{2}-\\d{2}([T ]\\d{2}:\\d{2}(:\\d{2})?(\\.\\d+)?(Z|[+-]\\d{2}:?\\d{2})?)?$");
+    }
+
+    // Validate field that may be a Firestore timestamp or an ISO 8601 string
+    function isValidTimestampOrDateString(val) {
+      return val is timestamp || isValidDateString(val);
+    }
+
+    // Validate optional timestamp or ISO 8601 date string
+    function isValidOptionalTimestampOrDateString(data, field) {
+      return !(field in data) || isValidTimestampOrDateString(data[field]);
+    }
+
+    // Validate optional nullable timestamp or ISO 8601 date string
+    function isValidOptionalNullableTimestampOrDateString(data, field) {
+      return !(field in data) ||
+        data[field] == null ||
+        isValidTimestampOrDateString(data[field]);
+    }
+
+    // Validate a list of tag IDs (bounded size and element type inspection)
+    function isValidTagIdsList(tagIds) {
+      return tagIds is list &&
+        tagIds.size() <= 50 &&
+        (tagIds.size() == 0 ||
+         (tagIds[0] is string &&
+          tagIds[0].size() >= 1 &&
+          tagIds[0].size() <= 128 &&
+          tagIds[tagIds.size() - 1] is string &&
+          tagIds[tagIds.size() - 1].size() >= 1 &&
+          tagIds[tagIds.size() - 1].size() <= 128));
+    }
+
+    // ===============================================================
+    // Domain Validators (Used in BOTH create and update rules)
+    // ===============================================================
+
+    // 0. User Profile Document Validator (`/users/{uid}`)
+    function isValidUserProfile(data) {
+      return hasOnlyAllowedFields([
+          'id', 'uid', 'display_name', 'email', 'photo_url', 'created_at', 'updated_at'
+        ]) &&
+        isValidOptionalString(data, 'id', 1, 128) &&
+        isValidOptionalString(data, 'uid', 1, 128) &&
+        isValidOptionalNullableString(data, 'display_name', 1, 120) &&
+        (!('email' in data) || data.email == null || isValidEmail(data.email)) &&
+        (!('photo_url' in data) || data.photo_url == null || isValidUrl(data.photo_url)) &&
+        isValidOptionalTimestampOrDateString(data, 'created_at') &&
+        isValidOptionalTimestampOrDateString(data, 'updated_at');
+    }
+
+    // 1. Task Document Validator (`/users/{uid}/tasks/{taskId}`)
+    function isValidTask(data) {
+      return hasRequiredFields(['title', 'completed', 'created_at']) &&
+        hasOnlyAllowedFields([
+          'id', 'uid', 'title', 'completed', 'created_at',
+          'parent_id', 'due_date', 'list_id', 'tag_ids',
+          'priority', 'notes', 'description', 'order',
+          'updated_at', 'completed_at'
+        ]) &&
+        validStringLength(data, 'title', 1, 500) &&
+        data.completed is bool &&
+        isValidTimestampOrDateString(data.created_at) &&
+        isValidOptionalString(data, 'id', 1, 128) &&
+        isValidOptionalString(data, 'uid', 1, 128) &&
+        isValidOptionalNullableString(data, 'parent_id', 1, 128) &&
+        isValidOptionalNullableTimestampOrDateString(data, 'due_date') &&
+        isValidOptionalNullableString(data, 'list_id', 1, 128) &&
+        (!('tag_ids' in data) || isValidTagIdsList(data.tag_ids)) &&
+        (!('priority' in data) || data.priority == null ||
+          (data.priority is string && data.priority in ['none', 'low', 'medium', 'high', 'urgent', ''])) &&
+        isValidOptionalNullableString(data, 'notes', 0, 10000) &&
+        isValidOptionalNullableString(data, 'description', 0, 10000) &&
+        isValidOptionalNumber(data, 'order', -1000000000, 10000000000000) &&
+        isValidOptionalNullableTimestampOrDateString(data, 'updated_at') &&
+        isValidOptionalNullableTimestampOrDateString(data, 'completed_at');
+    }
+
+    // 2. List Document Validator (`/users/{uid}/lists/{listId}`)
+    function isValidListDoc(data) {
+      return hasRequiredFields(['name']) &&
+        hasOnlyAllowedFields([
+          'id', 'uid', 'name', 'icon', 'color', 'created_at', 'updated_at', 'order', 'is_default'
+        ]) &&
+        validStringLength(data, 'name', 1, 120) &&
+        isValidOptionalString(data, 'id', 1, 128) &&
+        isValidOptionalString(data, 'uid', 1, 128) &&
+        isValidOptionalNullableString(data, 'icon', 0, 64) &&
+        isValidOptionalNullableString(data, 'color', 0, 32) &&
+        isValidOptionalTimestampOrDateString(data, 'created_at') &&
+        isValidOptionalNullableTimestampOrDateString(data, 'updated_at') &&
+        isValidOptionalNumber(data, 'order', -1000000000, 10000000000000) &&
+        isValidOptionalBool(data, 'is_default');
+    }
+
+    // 3. Tag Document Validator (`/users/{uid}/tags/{tagId}`)
+    function isValidTag(data) {
+      return hasRequiredFields(['name', 'color']) &&
+        hasOnlyAllowedFields([
+          'id', 'uid', 'name', 'color', 'created_at', 'updated_at', 'order'
+        ]) &&
+        validStringLength(data, 'name', 1, 60) &&
+        validStringLength(data, 'color', 1, 32) &&
+        data.color.matches("^(#[0-9a-fA-F]{3,8}|[a-zA-Z0-9_-]{1,32})$") &&
+        isValidOptionalString(data, 'id', 1, 128) &&
+        isValidOptionalString(data, 'uid', 1, 128) &&
+        isValidOptionalTimestampOrDateString(data, 'created_at') &&
+        isValidOptionalNullableTimestampOrDateString(data, 'updated_at') &&
+        isValidOptionalNumber(data, 'order', -1000000000, 10000000000000);
+    }
+
+    // 4. Focus Session Document Validator (`/users/{uid}/focus_sessions/{sessionId}`)
+    function isValidFocusSession(data) {
+      return hasRequiredFields(['duration_minutes', 'mode', 'started_at', 'completed_at']) &&
+        hasOnlyAllowedFields([
+          'id', 'uid', 'duration_minutes', 'mode', 'started_at', 'completed_at',
+          'task_id', 'task_title', 'mascot_id', 'notes', 'created_at'
+        ]) &&
+        data.duration_minutes is number &&
+        data.duration_minutes > 0 &&
+        data.duration_minutes <= 1440 &&
+        data.mode is string &&
+        data.mode in ['pomodoro', 'custom', 'stopwatch'] &&
+        isValidTimestampOrDateString(data.started_at) &&
+        isValidTimestampOrDateString(data.completed_at) &&
+        isValidOptionalString(data, 'id', 1, 128) &&
+        isValidOptionalString(data, 'uid', 1, 128) &&
+        isValidOptionalNullableString(data, 'task_id', 1, 128) &&
+        isValidOptionalNullableString(data, 'task_title', 0, 500) &&
+        isValidOptionalNullableString(data, 'mascot_id', 1, 64) &&
+        isValidOptionalNullableString(data, 'notes', 0, 2000) &&
+        isValidOptionalTimestampOrDateString(data, 'created_at');
+    }
+
+    // 5. Settings Document Validator (`/users/{uid}/settings/{settingId}`)
+    function isValidSettings(data) {
+      return data.keys().size() >= 1 &&
+        hasOnlyAllowedFields([
+          'id', 'uid', 'active_mascot', 'theme_mode', 'custom_theme',
+          'daily_focus_goal_minutes', 'pomodoro_work_minutes',
+          'pomodoro_short_break_minutes', 'pomodoro_long_break_minutes',
+          'sound_enabled', 'notifications_enabled',
+          'auto_start_breaks', 'auto_start_pomodoros',
+          'default_list_id', 'created_at', 'updated_at'
+        ]) &&
+        isValidOptionalString(data, 'id', 1, 128) &&
+        isValidOptionalString(data, 'uid', 1, 128) &&
+        isValidOptionalNullableString(data, 'active_mascot', 1, 64) &&
+        isValidOptionalNullableString(data, 'theme_mode', 1, 32) &&
+        (!('custom_theme' in data) || data.custom_theme == null ||
+          (data.custom_theme is map && data.custom_theme.size() <= 30)) &&
+        isValidOptionalNumber(data, 'daily_focus_goal_minutes', 1, 1440) &&
+        isValidOptionalNumber(data, 'pomodoro_work_minutes', 1, 240) &&
+        isValidOptionalNumber(data, 'pomodoro_short_break_minutes', 1, 120) &&
+        isValidOptionalNumber(data, 'pomodoro_long_break_minutes', 1, 180) &&
+        isValidOptionalBool(data, 'sound_enabled') &&
+        isValidOptionalBool(data, 'notifications_enabled') &&
+        isValidOptionalBool(data, 'auto_start_breaks') &&
+        isValidOptionalBool(data, 'auto_start_pomodoros') &&
+        isValidOptionalNullableString(data, 'default_list_id', 1, 128) &&
+        isValidOptionalTimestampOrDateString(data, 'created_at') &&
+        isValidOptionalTimestampOrDateString(data, 'updated_at');
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // User root document (strictly owner-only to protect PII)
+    match /users/{uid} {
+      allow read: if isOwner(uid);
+      allow create: if isOwner(uid) &&
+        uidUnchanged(uid) &&
+        isValidUserProfile(request.resource.data);
+      allow update: if isOwner(uid) &&
+        isDocOwner() &&
+        uidUnchanged(uid) &&
+        uidNotModified() &&
+        areImmutableFieldsUnchanged(['id', 'uid', 'created_at']) &&
+        isValidUserProfile(request.resource.data);
+      allow delete: if isOwner(uid) && isDocOwner();
+
+      // 1. Tasks Subcollection
+      match /tasks/{taskId} {
+        allow read: if isOwner(uid);
+        allow create: if isOwner(uid) &&
+          uidUnchanged(uid) &&
+          isValidTask(request.resource.data);
+        allow update: if isOwner(uid) &&
+          isDocOwner() &&
+          uidUnchanged(uid) &&
+          uidNotModified() &&
+          areImmutableFieldsUnchanged(['id', 'uid', 'created_at']) &&
+          isValidTask(request.resource.data);
+        allow delete: if isOwner(uid) && isDocOwner();
+      }
+
+      // 2. Lists Subcollection
+      match /lists/{listId} {
+        allow read: if isOwner(uid);
+        allow create: if isOwner(uid) &&
+          uidUnchanged(uid) &&
+          isValidListDoc(request.resource.data);
+        allow update: if isOwner(uid) &&
+          isDocOwner() &&
+          uidUnchanged(uid) &&
+          uidNotModified() &&
+          areImmutableFieldsUnchanged(['id', 'uid', 'created_at']) &&
+          isValidListDoc(request.resource.data);
+        allow delete: if isOwner(uid) && isDocOwner();
+      }
+
+      // 3. Tags Subcollection
+      match /tags/{tagId} {
+        allow read: if isOwner(uid);
+        allow create: if isOwner(uid) &&
+          uidUnchanged(uid) &&
+          isValidTag(request.resource.data);
+        allow update: if isOwner(uid) &&
+          isDocOwner() &&
+          uidUnchanged(uid) &&
+          uidNotModified() &&
+          areImmutableFieldsUnchanged(['id', 'uid', 'created_at']) &&
+          isValidTag(request.resource.data);
+        allow delete: if isOwner(uid) && isDocOwner();
+      }
+
+      // 4. Focus Sessions Subcollection
+      match /focus_sessions/{sessionId} {
+        allow read: if isOwner(uid);
+        allow create: if isOwner(uid) &&
+          uidUnchanged(uid) &&
+          isValidFocusSession(request.resource.data);
+        allow update: if isOwner(uid) &&
+          isDocOwner() &&
+          uidUnchanged(uid) &&
+          uidNotModified() &&
+          areImmutableFieldsUnchanged(['id', 'uid', 'started_at', 'created_at']) &&
+          isValidFocusSession(request.resource.data);
+        allow delete: if isOwner(uid) && isDocOwner();
+      }
+
+      // 5. User Settings & Preferences Subcollection
+      match /settings/{settingId} {
+        allow read: if isOwner(uid);
+        allow create: if isOwner(uid) &&
+          uidUnchanged(uid) &&
+          isValidSettings(request.resource.data);
+        allow update: if isOwner(uid) &&
+          isDocOwner() &&
+          uidUnchanged(uid) &&
+          uidNotModified() &&
+          areImmutableFieldsUnchanged(['id', 'uid', 'created_at']) &&
+          isValidSettings(request.resource.data);
+        allow delete: if isOwner(uid) && isDocOwner();
+      }
+    }
+
+    // Default Deny: Explicitly reject all reads and writes to any other path
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
