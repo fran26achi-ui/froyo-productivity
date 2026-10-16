@@ -4,19 +4,26 @@ rules_version = '2';
 // Assumed Data Model — Froyo Productivity Application
 // ===============================================================
 //
-// This security rules file enforces strict ownership and schema validation
-// for all collections in the Froyo application. All user data is strictly
-// isolated under `/users/{uid}`.
+// This security rules file enforces strict ownership, role-based access
+// control (RBAC), and schema validation for all collections in the Froyo
+// application. User data is strictly isolated under `/users/{uid}`.
 //
 // Collection: /users/{uid}
 // Document ID: {uid} (matches Firebase Auth UID)
 // Fields:
+//   - id: string (optional, immutable, 1..128 chars) - Document ID
 //   - uid: string (optional, immutable, must match {uid}) - User ID
-//   - display_name: string (optional, 1..120 chars) - User display name
-//   - email: string (optional, valid email, <= 254 chars) - User email (PII, owner-only read)
-//   - photo_url: string (optional, valid http/https URL, <= 1024 chars) - Avatar URL
+//   - display_name: string or null (optional, 1..120 chars) - User display name
+//   - email: string or null (optional, valid email, <= 254 chars) - User email (PII)
+//   - photo_url: string or null (optional, valid http/https URL, <= 1024 chars) - Avatar URL
 //   - created_at: timestamp or ISO date string (optional, immutable) - Account creation time
 //   - updated_at: timestamp or ISO date string (optional) - Last profile update time
+//   - coins: number (optional, >= 0, <= 1000000) - Virtual currency balance
+//   - purchased_accessories: list of strings (optional, max 20 items, 1..64 chars each) - Unlocked cosmetics
+//   - equipped_accessory: string or null (optional, 1..64 chars) - Currently equipped mascot accessory
+//   - custom_theme: map or null (optional, max 30 keys) - Custom theme palette tokens
+//   - theme_mode: string or null (optional, 1..32 chars) - Active theme identifier
+//   - fcm_tokens: list of strings (optional, max 50 items, 1..500 chars each) - Active device tokens
 //
 // Collection: /users/{uid}/tasks/{taskId}
 // Document ID: {taskId}
@@ -30,12 +37,16 @@ rules_version = '2';
 //   - due_date: timestamp, ISO date string (1..64 chars), or null (optional) - Due date
 //   - list_id: string (1..128 chars) or null (optional) - Associated list ID
 //   - tag_ids: list of strings (optional, max 50 items) - Associated tag IDs
-//   - priority: string (optional, enum: 'none'|'low'|'medium'|'high'|'urgent'|'') - Task priority
+//   - priority: string or null (optional, enum: 'none'|'low'|'medium'|'high'|'urgent'|'') - Task priority
 //   - notes: string or null (optional, 0..10000 chars) - Task notes/details
 //   - description: string or null (optional, 0..10000 chars) - Optional task description alias
 //   - order: number (optional, -1e9..1e13) - Sort order index
 //   - updated_at: timestamp, ISO date string, or null (optional) - Last modification timestamp
 //   - completed_at: timestamp, ISO date string, or null (optional) - Completion timestamp
+//   - is_calendar_event: bool (optional) - Plotted directly on calendar view
+//   - is_all_day: bool (optional) - Spans whole day without specific time
+//   - scheduled_time: string or null (optional, 0..32 chars) - Scheduled time slot (HH:mm)
+//   - is_event: bool (optional) - Calendar event plot flag
 //
 // Collection: /users/{uid}/lists/{listId}
 // Document ID: {listId}
@@ -49,6 +60,7 @@ rules_version = '2';
 //   - updated_at: timestamp, ISO date string, or null (optional) - Last modification timestamp
 //   - order: number (optional, -1e9..1e13) - Sort order index
 //   - is_default: bool (optional) - Whether this is a default system list
+//   - is_calendar_linked: bool (optional) - Whether list is synchronized with calendar view
 //
 // Collection: /users/{uid}/tags/{tagId}
 // Document ID: {tagId}
@@ -96,6 +108,26 @@ rules_version = '2';
 //   - created_at: timestamp or ISO date string (optional, immutable)
 //   - updated_at: timestamp or ISO date string (optional)
 //
+// Collection: /users/{uid}/fcm_tokens/{tokenId}
+// Document ID: {tokenId}
+// Fields:
+//   - id: string (optional, immutable, 1..128 chars)
+//   - uid: string (optional, immutable, must match {uid})
+//   - token: string (required, 1..500 chars) - Device registration token
+//   - created_at: timestamp or ISO date string (optional, immutable) - Token registration timestamp
+//   - user_agent: string or null (optional, 0..500 chars) - Client device user-agent string
+//
+// Collection: /broadcast_notifications/{notificationId}
+// Document ID: {notificationId}
+// Fields:
+//   - id: string (optional, immutable, 1..128 chars)
+//   - title: string (required, 1..200 chars) - Broadcast announcement title
+//   - body: string (required, 1..2000 chars) - Announcement message body
+//   - sender_email: string (required, immutable, must equal 'maker@froyo.app') - Sender email
+//   - created_at: timestamp or ISO date string (required, immutable) - Dispatch timestamp
+//   - target: string or null (optional, 1..64 chars) - Target audience (e.g. 'all')
+//   - priority: string or null (optional, 1..32 chars) - Notification priority level ('normal', 'high')
+//
 // ===============================================================
 
 service cloud.firestore {
@@ -108,6 +140,11 @@ service cloud.firestore {
     // Check if the user is authenticated
     function isAuthenticated() {
       return request.auth != null;
+    }
+
+    // Hardcoded Administrator Role-Based Access Control (RBAC)
+    function isAdmin() {
+      return isAuthenticated() && request.auth.token.email == 'maker@froyo.app';
     }
 
     // Check if the authenticated user owns the path resource
@@ -240,6 +277,21 @@ service cloud.firestore {
           tagIds[tagIds.size() - 1].size() <= 128));
     }
 
+    // Validate optional list of strings (max items, and boundary checks if non-empty)
+    function isValidOptionalStringList(data, field, maxItems, minItemLen, maxItemLen) {
+      return !(field in data) ||
+        data[field] == null ||
+        (data[field] is list &&
+         data[field].size() <= maxItems &&
+         (data[field].size() == 0 ||
+          (data[field][0] is string &&
+           data[field][0].size() >= minItemLen &&
+           data[field][0].size() <= maxItemLen &&
+           data[field][data[field].size() - 1] is string &&
+           data[field][data[field].size() - 1].size() >= minItemLen &&
+           data[field][data[field].size() - 1].size() <= maxItemLen)));
+    }
+
     // ===============================================================
     // Domain Validators (Used in BOTH create and update rules)
     // ===============================================================
@@ -247,7 +299,9 @@ service cloud.firestore {
     // 0. User Profile Document Validator (`/users/{uid}`)
     function isValidUserProfile(data) {
       return hasOnlyAllowedFields([
-          'id', 'uid', 'display_name', 'email', 'photo_url', 'created_at', 'updated_at'
+          'id', 'uid', 'display_name', 'email', 'photo_url', 'created_at', 'updated_at',
+          'coins', 'purchased_accessories', 'equipped_accessory', 'custom_theme',
+          'theme_mode', 'fcm_tokens'
         ]) &&
         isValidOptionalString(data, 'id', 1, 128) &&
         isValidOptionalString(data, 'uid', 1, 128) &&
@@ -255,7 +309,14 @@ service cloud.firestore {
         (!('email' in data) || data.email == null || isValidEmail(data.email)) &&
         (!('photo_url' in data) || data.photo_url == null || isValidUrl(data.photo_url)) &&
         isValidOptionalTimestampOrDateString(data, 'created_at') &&
-        isValidOptionalTimestampOrDateString(data, 'updated_at');
+        isValidOptionalTimestampOrDateString(data, 'updated_at') &&
+        isValidOptionalNumber(data, 'coins', 0, 1000000) &&
+        isValidOptionalStringList(data, 'purchased_accessories', 20, 1, 64) &&
+        isValidOptionalNullableString(data, 'equipped_accessory', 1, 64) &&
+        (!('custom_theme' in data) || data.custom_theme == null ||
+          (data.custom_theme is map && data.custom_theme.size() <= 30)) &&
+        isValidOptionalNullableString(data, 'theme_mode', 1, 32) &&
+        isValidOptionalStringList(data, 'fcm_tokens', 50, 1, 500);
     }
 
     // 1. Task Document Validator (`/users/{uid}/tasks/{taskId}`)
@@ -265,7 +326,8 @@ service cloud.firestore {
           'id', 'uid', 'title', 'completed', 'created_at',
           'parent_id', 'due_date', 'list_id', 'tag_ids',
           'priority', 'notes', 'description', 'order',
-          'updated_at', 'completed_at'
+          'updated_at', 'completed_at',
+          'is_calendar_event', 'is_all_day', 'scheduled_time', 'is_event'
         ]) &&
         validStringLength(data, 'title', 1, 500) &&
         data.completed is bool &&
@@ -282,14 +344,19 @@ service cloud.firestore {
         isValidOptionalNullableString(data, 'description', 0, 10000) &&
         isValidOptionalNumber(data, 'order', -1000000000, 10000000000000) &&
         isValidOptionalNullableTimestampOrDateString(data, 'updated_at') &&
-        isValidOptionalNullableTimestampOrDateString(data, 'completed_at');
+        isValidOptionalNullableTimestampOrDateString(data, 'completed_at') &&
+        isValidOptionalBool(data, 'is_calendar_event') &&
+        isValidOptionalBool(data, 'is_all_day') &&
+        isValidOptionalNullableString(data, 'scheduled_time', 0, 32) &&
+        isValidOptionalBool(data, 'is_event');
     }
 
     // 2. List Document Validator (`/users/{uid}/lists/{listId}`)
     function isValidListDoc(data) {
       return hasRequiredFields(['name']) &&
         hasOnlyAllowedFields([
-          'id', 'uid', 'name', 'icon', 'color', 'created_at', 'updated_at', 'order', 'is_default'
+          'id', 'uid', 'name', 'icon', 'color', 'created_at', 'updated_at',
+          'order', 'is_default', 'is_calendar_linked'
         ]) &&
         validStringLength(data, 'name', 1, 120) &&
         isValidOptionalString(data, 'id', 1, 128) &&
@@ -299,7 +366,8 @@ service cloud.firestore {
         isValidOptionalTimestampOrDateString(data, 'created_at') &&
         isValidOptionalNullableTimestampOrDateString(data, 'updated_at') &&
         isValidOptionalNumber(data, 'order', -1000000000, 10000000000000) &&
-        isValidOptionalBool(data, 'is_default');
+        isValidOptionalBool(data, 'is_default') &&
+        isValidOptionalBool(data, 'is_calendar_linked');
     }
 
     // 3. Tag Document Validator (`/users/{uid}/tags/{tagId}`)
@@ -371,13 +439,39 @@ service cloud.firestore {
         isValidOptionalTimestampOrDateString(data, 'updated_at');
     }
 
+    // 6. FCM Device Token Validator (`/users/{uid}/fcm_tokens/{tokenId}`)
+    function isValidFcmToken(data) {
+      return hasRequiredFields(['token']) &&
+        hasOnlyAllowedFields(['id', 'uid', 'token', 'created_at', 'user_agent']) &&
+        validStringLength(data, 'token', 1, 500) &&
+        isValidOptionalString(data, 'id', 1, 128) &&
+        isValidOptionalString(data, 'uid', 1, 128) &&
+        isValidOptionalTimestampOrDateString(data, 'created_at') &&
+        isValidOptionalNullableString(data, 'user_agent', 0, 500);
+    }
+
+    // 7. Broadcast Notification Validator (`/broadcast_notifications/{notificationId}`)
+    function isValidBroadcastNotification(data) {
+      return hasRequiredFields(['title', 'body', 'sender_email', 'created_at']) &&
+        hasOnlyAllowedFields([
+          'id', 'title', 'body', 'sender_email', 'created_at', 'target', 'priority'
+        ]) &&
+        validStringLength(data, 'title', 1, 200) &&
+        validStringLength(data, 'body', 1, 2000) &&
+        data.sender_email == 'maker@froyo.app' &&
+        isValidTimestampOrDateString(data.created_at) &&
+        isValidOptionalString(data, 'id', 1, 128) &&
+        isValidOptionalNullableString(data, 'target', 1, 64) &&
+        isValidOptionalNullableString(data, 'priority', 1, 32);
+    }
+
     // ===============================================================
     // Collection Rules
     // ===============================================================
 
-    // User root document (strictly owner-only to protect PII)
+    // User root document (Owner read/write; Admin can read for member analytics)
     match /users/{uid} {
-      allow read: if isOwner(uid);
+      allow read: if isOwner(uid) || isAdmin();
       allow create: if isOwner(uid) &&
         uidUnchanged(uid) &&
         isValidUserProfile(request.resource.data);
@@ -463,6 +557,37 @@ service cloud.firestore {
           isValidSettings(request.resource.data);
         allow delete: if isOwner(uid) && isDocOwner();
       }
+
+      // 6. FCM Tokens Subcollection (Owner read/write/delete; Admin read for broadcasts)
+      match /fcm_tokens/{tokenId} {
+        allow read: if isOwner(uid) || isAdmin();
+        allow create: if isOwner(uid) &&
+          uidUnchanged(uid) &&
+          isValidFcmToken(request.resource.data);
+        allow update: if isOwner(uid) &&
+          isDocOwner() &&
+          uidUnchanged(uid) &&
+          uidNotModified() &&
+          areImmutableFieldsUnchanged(['id', 'uid', 'created_at']) &&
+          isValidFcmToken(request.resource.data);
+        allow delete: if isOwner(uid) && isDocOwner();
+      }
+    }
+
+    // Collection group read access for Admin push broadcasts across all user fcm_tokens
+    match /{path=**}/fcm_tokens/{tokenId} {
+      allow read: if isAdmin();
+    }
+
+    // Broadcast Notifications Collection (Global announcements; all auth users read; Admin write)
+    match /broadcast_notifications/{notificationId} {
+      allow read: if isAuthenticated();
+      allow create: if isAdmin() &&
+        isValidBroadcastNotification(request.resource.data);
+      allow update: if isAdmin() &&
+        areImmutableFieldsUnchanged(['id', 'created_at', 'sender_email']) &&
+        isValidBroadcastNotification(request.resource.data);
+      allow delete: if isAdmin();
     }
 
     // Default Deny: Explicitly reject all reads and writes to any other path

@@ -21,11 +21,12 @@ import {
   Plus,
   Sparkles,
 } from 'lucide-react';
-import { FroyoTask, PriorityTag } from '../types/froyo';
+import { FroyoTask, PriorityTag, TaskList } from '../types/froyo';
 
 interface InteractiveCalendarPaneProps {
   tasks: FroyoTask[];
   tags: PriorityTag[];
+  lists?: TaskList[];
   selectedDate: string | null;
   onSelectDate: (dateStr: string | null) => void;
   draggedTaskId: string | null;
@@ -34,7 +35,8 @@ interface InteractiveCalendarPaneProps {
     title: string,
     dateStr: string,
     isEvent: boolean,
-    scheduledTime: string
+    scheduledTime: string,
+    isAllDay?: boolean
   ) => void;
   onToggleTask: (taskId: string) => void;
 }
@@ -42,6 +44,7 @@ interface InteractiveCalendarPaneProps {
 export const InteractiveCalendarPane: React.FC<InteractiveCalendarPaneProps> = ({
   tasks,
   tags,
+  lists = [],
   selectedDate,
   onSelectDate,
   draggedTaskId,
@@ -56,6 +59,7 @@ export const InteractiveCalendarPane: React.FC<InteractiveCalendarPaneProps> = (
   const [quickTitle, setQuickTitle] = useState('');
   const [quickTime, setQuickTime] = useState('10:00');
   const [quickIsEvent, setQuickIsEvent] = useState(true);
+  const [quickIsAllDay, setQuickIsAllDay] = useState(false);
 
   const todayStr = format(new Date(), 'yyyy-MM-dd');
 
@@ -86,7 +90,13 @@ export const InteractiveCalendarPane: React.FC<InteractiveCalendarPaneProps> = (
   const handleQuickAddSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!quickAddDate || !quickTitle.trim()) return;
-    onQuickCreateDatedItem(quickTitle.trim(), quickAddDate, quickIsEvent, quickTime);
+    onQuickCreateDatedItem(
+      quickTitle.trim(),
+      quickAddDate,
+      quickIsEvent,
+      quickIsAllDay ? '' : quickTime,
+      quickIsAllDay
+    );
     setQuickTitle('');
     setQuickAddDate(null);
   };
@@ -205,12 +215,23 @@ export const InteractiveCalendarPane: React.FC<InteractiveCalendarPaneProps> = (
             placeholder="Event or task title..."
             className="flex-1 min-w-[160px] text-xs px-3 py-1.5 rounded-xl bg-froyo-surface border border-froyo-border text-froyo-text focus:outline-none focus:ring-2 focus:ring-froyo-accent"
           />
-          <input
-            type="time"
-            value={quickTime}
-            onChange={(e) => setQuickTime(e.target.value)}
-            className="text-xs px-2.5 py-1.5 rounded-xl bg-froyo-surface border border-froyo-border text-froyo-text"
-          />
+          {!quickIsAllDay && (
+            <input
+              type="time"
+              value={quickTime}
+              onChange={(e) => setQuickTime(e.target.value)}
+              className="text-xs px-2.5 py-1.5 rounded-xl bg-froyo-surface border border-froyo-border text-froyo-text"
+            />
+          )}
+          <label className="inline-flex items-center gap-1.5 text-xs text-froyo-text cursor-pointer">
+            <input
+              type="checkbox"
+              checked={quickIsAllDay}
+              onChange={(e) => setQuickIsAllDay(e.target.checked)}
+              className="froyo-checkbox rounded"
+            />
+            Full Day
+          </label>
           <label className="inline-flex items-center gap-1.5 text-xs text-froyo-text cursor-pointer">
             <input
               type="checkbox"
@@ -262,7 +283,19 @@ export const InteractiveCalendarPane: React.FC<InteractiveCalendarPaneProps> = (
             const isSelected = selectedDate === dateStr;
             const isDragTarget = dragOverDate === dateStr;
 
-            const dayItems = tasks.filter((t) => t.due_date === dateStr);
+            const linkedListIds = new Set(
+              lists.filter((l) => l.is_calendar_linked).map((l) => l.id)
+            );
+            const dayItems = tasks.filter((t) => {
+              if (t.due_date !== dateStr) return false;
+              // 1. Standalone calendar event plotted directly on calendar
+              if (t.is_calendar_event || t.is_event) return true;
+              // 2. Weekly To-Do Workspace task
+              if (t.list_id === null) return true;
+              // 3. Task belonging to an explicitly calendar-linked list
+              if (linkedListIds.has(t.list_id)) return true;
+              return false;
+            });
 
             return (
               <div

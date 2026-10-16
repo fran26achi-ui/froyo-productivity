@@ -14,6 +14,7 @@ interface ThemeStudioModalProps {
   onClose: () => void;
   preferences: UserPreferences;
   onUpdatePreferences: (next: UserPreferences) => void;
+  onSaveThemeToCloud?: () => Promise<void>;
 }
 
 export const ThemeStudioModal: React.FC<ThemeStudioModalProps> = ({
@@ -21,7 +22,11 @@ export const ThemeStudioModal: React.FC<ThemeStudioModalProps> = ({
   onClose,
   preferences,
   onUpdatePreferences,
+  onSaveThemeToCloud,
 }) => {
+  const [isSaving, setIsSaving] = React.useState(false);
+  const [savedFeedback, setSavedFeedback] = React.useState(false);
+
   if (!isOpen) return null;
 
   const handleColorTokenChange = (key: keyof CustomThemeTokens, value: string) => {
@@ -33,6 +38,18 @@ export const ThemeStudioModal: React.FC<ThemeStudioModalProps> = ({
         [key]: value,
       },
     });
+  };
+
+  const handleSaveToCloud = async () => {
+    if (!onSaveThemeToCloud) return;
+    setIsSaving(true);
+    try {
+      await onSaveThemeToCloud();
+      setSavedFeedback(true);
+      setTimeout(() => setSavedFeedback(false), 2800);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -138,28 +155,67 @@ export const ThemeStudioModal: React.FC<ThemeStudioModalProps> = ({
                 { key: 'bgSurface', label: 'Surface / Cards' },
                 { key: 'borderSubtle', label: 'Soft Borders' },
                 { key: 'accentPrimary', label: 'Primary Accent' },
-                { key: 'accentSecondary', label: 'Secondary Rose' },
+                { key: 'accentSecondary', label: 'Secondary Accent' },
                 { key: 'textPrimary', label: 'Typography' },
               ] as const
             ).map((item) => (
-              <label
+              <div
                 key={item.key}
-                className="flex items-center justify-between p-2.5 rounded-xl bg-froyo-elevated/60 border border-froyo-border cursor-pointer"
+                className="p-2.5 rounded-2xl bg-froyo-canvas/60 border border-froyo-border space-y-1.5"
               >
-                <span className="text-xs font-medium text-froyo-text">{item.label}</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold text-froyo-text">{item.label}</span>
+                  <input
+                    type="color"
+                    data-testid={`custom-color-${item.key}`}
+                    value={preferences.customTheme[item.key]}
+                    onChange={(e) => handleColorTokenChange(item.key, e.target.value)}
+                    className="w-6 h-6 rounded-lg cursor-pointer border-0 bg-transparent p-0"
+                  />
+                </div>
                 <input
-                  type="color"
-                  data-testid={`custom-color-${item.key}`}
+                  type="text"
+                  maxLength={7}
+                  data-testid={`custom-hex-${item.key}`}
                   value={preferences.customTheme[item.key]}
-                  onChange={(e) => handleColorTokenChange(item.key, e.target.value)}
-                  className="w-7 h-7 rounded-lg cursor-pointer border-0 bg-transparent"
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val.startsWith('#') || val.length === 0) {
+                      handleColorTokenChange(item.key, val);
+                    } else {
+                      handleColorTokenChange(item.key, `#${val}`);
+                    }
+                  }}
+                  className="w-full text-[10px] font-mono px-2 py-1 rounded-lg bg-froyo-surface border border-froyo-border text-froyo-text focus:outline-none focus:ring-1 focus:ring-froyo-accent"
                 />
-              </label>
+              </div>
             ))}
           </div>
         </div>
 
-        <div className="flex justify-end pt-2">
+        {/* Footer with Cloud Persistence */}
+        <div className="flex items-center justify-between pt-2 border-t border-froyo-border">
+          {onSaveThemeToCloud && (
+            <button
+              type="button"
+              onClick={handleSaveToCloud}
+              disabled={isSaving}
+              data-testid="save-theme-to-cloud-btn"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-froyo-elevated border border-froyo-border hover:border-froyo-accent text-froyo-text transition-colors"
+            >
+              {isSaving ? (
+                <span>Syncing to Firestore...</span>
+              ) : savedFeedback ? (
+                <span className="text-emerald-600 dark:text-emerald-400">✓ Saved to Profile!</span>
+              ) : (
+                <>
+                  <Sparkles className="w-3.5 h-3.5 text-froyo-accent" />
+                  <span>Save to Cloud Profile</span>
+                </>
+              )}
+            </button>
+          )}
+
           <button
             type="button"
             onClick={onClose}

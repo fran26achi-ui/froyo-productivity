@@ -57,7 +57,61 @@ export const PRESET_THEMES: Record<string, { label: string; tokens: CustomThemeT
       textMuted: '#736294',
     },
   },
+  mint: {
+    label: 'Mint Sorbet',
+    tokens: {
+      bgCanvas: '#F0FDF4',
+      bgSurface: '#FFFFFF',
+      bgElevated: '#DCFCE7',
+      borderSubtle: '#BBF7D0',
+      accentPrimary: '#10B981',
+      accentSecondary: '#34D399',
+      textPrimary: '#14532D',
+      textMuted: '#166534',
+    },
+  },
+  sunflower: {
+    label: 'Warm Honey Sunflower',
+    tokens: {
+      bgCanvas: '#FFFBEB',
+      bgSurface: '#FFFFFF',
+      bgElevated: '#FEF3C7',
+      borderSubtle: '#FDE68A',
+      accentPrimary: '#F59E0B',
+      accentSecondary: '#FBBF24',
+      textPrimary: '#78350F',
+      textMuted: '#92400E',
+    },
+  },
 };
+
+/**
+ * Custom Theme Builder: Allows users to craft arbitrary hex palettes
+ * with automatic contrast calibration and fallback harmonization.
+ */
+export function createCustomThemePalette(
+  overrides: Partial<CustomThemeTokens>
+): CustomThemeTokens {
+  const bgCanvas = overrides.bgCanvas || '#FFF5F7';
+  const isDark = getRelativeLuminance(bgCanvas) < 0.28;
+
+  const defaultTextPrimary = isDark ? '#FDF4F7' : '#3D3135';
+  const defaultTextMuted = isDark ? '#B09AA2' : '#8C737B';
+  const defaultElevated = isDark ? '#2E242A' : '#FFF0F4';
+  const defaultBorder = isDark ? '#3D2F37' : '#FCE7ED';
+
+  return {
+    bgCanvas,
+    bgSurface: overrides.bgSurface || (isDark ? '#241D22' : '#FFFFFF'),
+    bgElevated: overrides.bgElevated || defaultElevated,
+    borderSubtle: overrides.borderSubtle || defaultBorder,
+    accentPrimary: overrides.accentPrimary || '#FF85A1',
+    accentSecondary: overrides.accentSecondary || '#FFA6C1',
+    textPrimary: overrides.textPrimary || defaultTextPrimary,
+    textMuted: overrides.textMuted || defaultTextMuted,
+    ...overrides,
+  };
+}
 
 export function applyThemeVariables(prefs: UserPreferences): void {
   if (typeof document === 'undefined') return;

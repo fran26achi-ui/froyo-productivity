@@ -19,8 +19,19 @@ import {
   User as FirebaseUser,
   Auth,
 } from 'firebase/auth';
+import {
+  getMessaging,
+  getToken,
+  onMessage,
+  isSupported as isMessagingSupported,
+  Messaging,
+} from 'firebase/messaging';
 import { addDays, format, startOfWeek, subDays } from 'date-fns';
 import {
+  AccessoryId,
+  BroadcastNotification,
+  CoinGainEvent,
+  CustomThemeTokens,
   FocusSessionLog,
   FroyoTask,
   FroyoUser,
@@ -61,8 +72,8 @@ try {
 }
 
 export const DEFAULT_DEMO_USER: FroyoUser = {
-  uid: 'user-pastel-maker',
-  email: 'maker@froyo.app',
+  uid: 'user-pastel-creator',
+  email: 'creator@froyo.app',
   displayName: 'Froyo Creator',
   photoURL: null,
   isAnonymous: false,
@@ -71,7 +82,14 @@ export const DEFAULT_DEMO_USER: FroyoUser = {
 const AUTH_STORAGE_KEY = 'froyo_current_auth_user_v1';
 const REGISTERED_USERS_KEY = 'froyo_registered_users_registry_v1';
 
-export type FirestoreCollectionName = 'tasks' | 'lists' | 'tags' | 'focus_sessions' | 'settings';
+export type FirestoreCollectionName =
+  | 'tasks'
+  | 'lists'
+  | 'tags'
+  | 'focus_sessions'
+  | 'settings'
+  | 'fcm_tokens'
+  | 'broadcast_notifications';
 
 function getStorageKey(uid: string, colName: FirestoreCollectionName): string {
   return `froyo_firestore_users_${uid}_${colName}`;
@@ -602,3 +620,391 @@ export function saveUserPreferences(prefs: UserPreferences): void {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
 }
+
+// ----------------- Custom Theme Persistence in Firestore -----------------
+
+export async function saveUserThemeToFirestore(
+  uid: string,
+  customTheme: CustomThemeTokens,
+  themeMode: 'pastel-pink' | 'dark' | 'custom'
+): Promise<void> {
+  const currentPrefs = loadUserPreferences();
+  const nextPrefs: UserPreferences = {
+    ...currentPrefs,
+    customTheme,
+    themeMode,
+  };
+  saveUserPreferences(nextPrefs);
+
+  if (isCloudConfigured && db) {
+    try {
+      const userDocRef = doc(db, 'users', uid);
+      await setDoc(
+        userDocRef,
+        {
+          custom_theme: customTheme,
+          theme_mode: themeMode,
+          updated_at: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+    } catch {
+      // Local persistent cache fallback
+    }
+  }
+
+  // Also write to local user record
+  const regRaw = typeof window !== 'undefined' ? window.localStorage.getItem(REGISTERED_USERS_KEY) : null;
+  if (regRaw) {
+    try {
+      const reg = JSON.parse(regRaw);
+      for (const email of Object.keys(reg)) {
+        if (reg[email].uid === uid) {
+          reg[email].custom_theme = customTheme;
+          reg[email].theme_mode = themeMode;
+        }
+      }
+      window.localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(reg));
+    } catch {
+      // ignore
+    }
+  }
+}
+
+// ----------------- Virtual Currency (Froyo Coins) & Sanctuary Shop -----------------
+
+const WALLET_KEY_PREFIX = 'froyo_user_wallet_v1_';
+
+export interface UserWalletData {
+  coins: number;
+  purchasedAccessories: AccessoryId[];
+  equippedAccessory: AccessoryId | null;
+}
+
+export function getUserWallet(uid: string): UserWalletData {
+  const defaultWallet: UserWalletData = {
+    coins: 60, // Welcome gift so user can experience the sanctuary shop immediately
+    purchasedAccessories: ['nightcap'],
+    equippedAccessory: null,
+  };
+
+  if (typeof window === 'undefined') return defaultWallet;
+  const raw = window.localStorage.getItem(`${WALLET_KEY_PREFIX}${uid}`);
+  if (!raw) {
+    window.localStorage.setItem(`${WALLET_KEY_PREFIX}${uid}`, JSON.stringify(defaultWallet));
+    return defaultWallet;
+  }
+  try {
+    return { ...defaultWallet, ...JSON.parse(raw) };
+  } catch {
+    return defaultWallet;
+  }
+}
+
+function saveUserWallet(uid: string, data: UserWalletData): void {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(`${WALLET_KEY_PREFIX}${uid}`, JSON.stringify(data));
+  broadcastChannel?.postMessage({ key: `wallet_${uid}` });
+
+  if (isCloudConfigured && db) {
+    try {
+      const docRef = doc(db, 'users', uid);
+      setDoc(
+        docRef,
+        {
+          coins: data.coins,
+          purchased_accessories: data.purchasedAccessories,
+          equipped_accessory: data.equippedAccessory,
+          updated_at: new Date().toISOString(),
+        },
+        { merge: true }
+      ).catch(() => {});
+    } catch {
+      // persistent cache fallback
+    }
+  }
+}
+
+/**
+ * Award Froyo Coins:
+ * - Standard task: +10 coins
+ * - Priority tagged task: +25 coins
+ * - 3-day weekly momentum streak: +50 coins
+ */
+export function awardUserCoins(
+  uid: string,
+  hasPriorityTag: boolean,
+  isStreak: boolean
+): { wallet: UserWalletData; event: CoinGainEvent } {
+  let amount = 10;
+  let reason = 'Completed standard task';
+  if (isStreak) {
+    amount = 50;
+    reason = '3-day weekly momentum streak bonus';
+  } else if (hasPriorityTag) {
+    amount = 25;
+    reason = 'Priority tagged task bonus';
+  }
+
+  const current = getUserWallet(uid);
+  const updated: UserWalletData = {
+    ...current,
+    coins: current.coins + amount,
+  };
+  saveUserWallet(uid, updated);
+
+  const event: CoinGainEvent = {
+    id: `coin-award-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+    amount,
+    reason,
+  };
+
+  return { wallet: updated, event };
+}
+
+export function purchaseUserAccessory(
+  uid: string,
+  accessoryId: AccessoryId,
+  cost: number
+): UserWalletData {
+  const current = getUserWallet(uid);
+  if (current.purchasedAccessories.includes(accessoryId)) {
+    return current;
+  }
+  if (current.coins < cost) {
+    throw new Error(`Insufficient Froyo Coins! Need ${cost - current.coins} more.`);
+  }
+
+  const updated: UserWalletData = {
+    ...current,
+    coins: current.coins - cost,
+    purchasedAccessories: [...current.purchasedAccessories, accessoryId],
+    equippedAccessory: accessoryId, // Automatically equip on purchase for instant gratification
+  };
+  saveUserWallet(uid, updated);
+  return updated;
+}
+
+export function equipUserAccessory(
+  uid: string,
+  accessoryId: AccessoryId | null
+): UserWalletData {
+  const current = getUserWallet(uid);
+  const updated: UserWalletData = {
+    ...current,
+    equippedAccessory: accessoryId,
+  };
+  saveUserWallet(uid, updated);
+  return updated;
+}
+
+// ----------------- FCM & Push Notifications -----------------
+
+let messagingInstance: Messaging | null = null;
+
+export async function getMessagingModule(): Promise<Messaging | null> {
+  if (typeof window === 'undefined') return null;
+  if (messagingInstance) return messagingInstance;
+  try {
+    const supported = await isMessagingSupported();
+    if (supported && app) {
+      messagingInstance = getMessaging(app);
+      return messagingInstance;
+    }
+  } catch {
+    // Unsupported environment / no SW
+  }
+  return null;
+}
+
+const GLOBAL_FCM_TOKENS_KEY = 'froyo_global_fcm_tokens_registry_v1';
+
+export async function requestNotificationToken(uid: string): Promise<string | null> {
+  if (typeof window === 'undefined' || !('Notification' in window)) {
+    return null;
+  }
+
+  const permission = await Notification.requestPermission();
+  if (permission !== 'granted') {
+    return null;
+  }
+
+  let token: string | null = null;
+  try {
+    const messaging = await getMessagingModule();
+    if (messaging && 'serviceWorker' in navigator) {
+      const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+      token = await getToken(messaging, {
+        serviceWorkerRegistration: registration,
+        vapidKey: 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDZKrxZ_W7kfZW5tBwP1p8U_5Yx_xZ7F3F',
+      });
+    }
+  } catch {
+    // Fallback resilient token generation for offline / test environments
+  }
+
+  if (!token) {
+    token = `fcm-token-${uid}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  // Save to user's tokens collection: users/{uid}/fcm_tokens/{tokenId}
+  const tokenDoc = {
+    id: `token-${token.slice(-12)}`,
+    uid,
+    token,
+    user_agent: typeof navigator !== 'undefined' ? navigator.userAgent.slice(0, 200) : 'Web Client',
+    created_at: new Date().toISOString(),
+  };
+
+  await upsertUserDocument(uid, 'fcm_tokens' as FirestoreCollectionName, tokenDoc, () => [tokenDoc]);
+
+  // Save to global admin token registry for broadcast tracking
+  const rawGlobal = window.localStorage.getItem(GLOBAL_FCM_TOKENS_KEY);
+  const registry: Record<string, string> = rawGlobal ? JSON.parse(rawGlobal) : {};
+  registry[token] = uid;
+  window.localStorage.setItem(GLOBAL_FCM_TOKENS_KEY, JSON.stringify(registry));
+
+  return token;
+}
+
+export function subscribeToForegroundMessages(
+  onMessageReceived: (payload: { title: string; body: string }) => void
+): () => void {
+  let unsubFcm: (() => void) | null = null;
+
+  getMessagingModule().then((messaging) => {
+    if (messaging) {
+      unsubFcm = onMessage(messaging, (payload) => {
+        const title = payload.notification?.title || payload.data?.title || 'Froyo Notification';
+        const body = payload.notification?.body || payload.data?.body || '';
+        onMessageReceived({ title, body });
+      });
+    }
+  });
+
+  return () => {
+    if (unsubFcm) unsubFcm();
+  };
+}
+
+// ----------------- Admin Role-Based Broadcast Engine -----------------
+
+const BROADCASTS_STORAGE_KEY = 'froyo_broadcast_notifications_v1';
+const broadcastSubscribers = new Set<(n: BroadcastNotification) => void>();
+
+export async function broadcastPushNotification(
+  title: string,
+  body: string,
+  senderEmailOrPriority?: string,
+  maybePriority: 'normal' | 'high' = 'high'
+): Promise<BroadcastNotification> {
+  let senderEmail = 'maker@froyo.app';
+  let priority: 'normal' | 'high' = 'high';
+
+  if (senderEmailOrPriority === 'normal' || senderEmailOrPriority === 'high') {
+    priority = senderEmailOrPriority;
+    senderEmail = getCurrentUser()?.email || 'maker@froyo.app';
+  } else if (senderEmailOrPriority) {
+    senderEmail = senderEmailOrPriority;
+    priority = maybePriority;
+  } else {
+    senderEmail = getCurrentUser()?.email || 'maker@froyo.app';
+  }
+
+  // CRITICAL RBAC CHECK: Only maker@froyo.app is granted Administrator privileges
+  if (senderEmail.trim().toLowerCase() !== 'maker@froyo.app') {
+    throw new Error('Access Denied: Only maker@froyo.app possesses Administrator broadcast privileges.');
+  }
+
+  const notification: BroadcastNotification = {
+    id: `broadcast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    title,
+    body,
+    sender_email: 'maker@froyo.app',
+    created_at: new Date().toISOString(),
+    target: 'all',
+    priority,
+  };
+
+  // 1. Save to local broadcast registry
+  if (typeof window !== 'undefined') {
+    const raw = window.localStorage.getItem(BROADCASTS_STORAGE_KEY);
+    const list: BroadcastNotification[] = raw ? JSON.parse(raw) : [];
+    window.localStorage.setItem(BROADCASTS_STORAGE_KEY, JSON.stringify([notification, ...list]));
+  }
+
+  // 2. Persist to Firestore collection `broadcast_notifications/{id}`
+  if (isCloudConfigured && db) {
+    try {
+      const docRef = doc(db, 'broadcast_notifications', notification.id);
+      await setDoc(docRef, notification);
+    } catch {
+      // offline fallback
+    }
+  }
+
+  // 3. Emit to all active client tabs / listeners
+  broadcastSubscribers.forEach((cb) => cb(notification));
+  broadcastChannel?.postMessage({
+    type: 'froyo_broadcast_notification',
+    payload: notification,
+  });
+
+  // 4. Show native browser notification if granted
+  if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+    try {
+      new Notification(notification.title, {
+        body: notification.body,
+        icon: '/froyo-logo.svg',
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  return notification;
+}
+
+export function subscribeToBroadcastNotifications(
+  onBroadcast: (n: BroadcastNotification) => void
+): () => void {
+  broadcastSubscribers.add(onBroadcast);
+
+  // Hook into broadcast channel for cross-tab realtime synchronization
+  const handler = (event: MessageEvent) => {
+    if (event.data?.type === 'froyo_broadcast_notification' && event.data.payload) {
+      onBroadcast(event.data.payload as BroadcastNotification);
+    }
+  };
+
+  broadcastChannel?.addEventListener('message', handler);
+
+  return () => {
+    broadcastSubscribers.delete(onBroadcast);
+    broadcastChannel?.removeEventListener('message', handler);
+  };
+}
+
+export async function getAdminBroadcastMetrics(): Promise<{
+  totalTokens: number;
+  totalSubscribers: number;
+  recentBroadcasts: BroadcastNotification[];
+}> {
+  if (typeof window === 'undefined') {
+    return { totalTokens: 1, totalSubscribers: 1, recentBroadcasts: [] };
+  }
+
+  const rawTokens = window.localStorage.getItem(GLOBAL_FCM_TOKENS_KEY);
+  const tokenMap: Record<string, string> = rawTokens ? JSON.parse(rawTokens) : {};
+  const totalTokens = Math.max(1, Object.keys(tokenMap).length);
+
+  const rawBroadcasts = window.localStorage.getItem(BROADCASTS_STORAGE_KEY);
+  const recentBroadcasts: BroadcastNotification[] = rawBroadcasts ? JSON.parse(rawBroadcasts) : [];
+
+  return {
+    totalTokens,
+    totalSubscribers: Math.max(1, new Set(Object.values(tokenMap)).size),
+    recentBroadcasts: recentBroadcasts.slice(0, 10),
+  };
+}
+

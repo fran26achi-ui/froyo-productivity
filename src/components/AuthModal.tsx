@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { KeyRound, Mail, Sparkles, User, X } from 'lucide-react';
 import { FroyoUser } from '../types/froyo';
 import { loginWithEmail, registerWithEmail } from '../lib/firebase';
+import { FroyoLogo } from './FroyoLogo';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -71,30 +72,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       data-testid="auth-modal"
     >
       <div className="w-full max-w-md rounded-3xl bg-froyo-surface border border-froyo-border shadow-froyo-lg p-6 space-y-5">
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-froyo-border pb-4">
-          <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-2xl bg-froyo-accent/15 text-froyo-accent flex items-center justify-center">
-              <Sparkles className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="font-display font-bold text-lg text-froyo-text">
-                {isSignUp ? 'Create Your Froyo Account' : 'Sign in to Froyo'}
-              </h2>
-              <p className="text-xs text-froyo-muted">
-                {isSignUp
-                  ? 'Sync your mascots, calendar, and focus analytics'
-                  : 'Welcome back to your ambient workspace'}
-              </p>
-            </div>
-          </div>
+        {/* Header with Prominent Froyo Brand Logo */}
+        <div className="flex flex-col items-center text-center border-b border-froyo-border pb-5 relative">
           <button
             type="button"
             onClick={onClose}
-            className="p-2 rounded-xl hover:bg-froyo-elevated text-froyo-muted hover:text-froyo-text"
+            className="absolute right-0 top-0 p-2 rounded-xl hover:bg-froyo-elevated text-froyo-muted hover:text-froyo-text"
           >
             <X className="w-4 h-4" />
           </button>
+          <div className="mb-2">
+            <FroyoLogo size="lg" animated={true} />
+          </div>
+          <h2 className="font-display font-extrabold text-xl text-froyo-text tracking-tight">
+            {isSignUp ? 'Join Froyo V1 Studio' : 'Welcome Back to Froyo'}
+          </h2>
+          <p className="text-xs text-froyo-muted mt-1 max-w-xs">
+            {isSignUp
+              ? 'Start your pastel productivity sanctuary with companion mascots, coin rewards & focus analytics'
+              : 'Sign in to access your synchronized tasks, calendar, sanctuary shop & pets'}
+          </p>
         </div>
 
         {error && (

@@ -1,10 +1,12 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import {
+  AccessoryId,
   FocusMascotActivity,
   MascotHealthState,
   MascotType,
 } from '../types/froyo';
+import { AccessoryVector } from './MascotAccessories';
 
 export const MASCOT_CATALOG: Record<
   MascotType,
@@ -107,6 +109,7 @@ interface MascotCompanionProps {
   healthScore: number;
   size?: 'sm' | 'md' | 'lg' | 'xl';
   focusActivity?: FocusMascotActivity | null;
+  equippedAccessory?: AccessoryId | null;
 }
 
 export const MascotCompanion: React.FC<MascotCompanionProps> = ({
@@ -115,6 +118,7 @@ export const MascotCompanion: React.FC<MascotCompanionProps> = ({
   healthScore,
   size = 'md',
   focusActivity = null,
+  equippedAccessory = null,
 }) => {
   const dimensions = {
     sm: 'w-14 h-14',
@@ -234,6 +238,11 @@ export const MascotCompanion: React.FC<MascotCompanionProps> = ({
         {/* 9. PICKLE */}
         {mascot === 'pickle' && (
           <PickleVector state={healthState} focusActivity={focusActivity} />
+        )}
+
+        {/* Universal Accessory Layer (Equipped from Sanctuary Shop) */}
+        {equippedAccessory && (
+          <AccessoryVector accessoryId={equippedAccessory} />
         )}
 
         {/* Flourishing Particle Overlay */}

@@ -1,5 +1,5 @@
-import React from 'react';
-import { Database, ShieldCheck, Sliders, User, Volume2, X } from 'lucide-react';
+import React, { useState } from 'react';
+import { Bell, Database, Radio, ShieldCheck, Sliders, User, Volume2, X } from 'lucide-react';
 import { FroyoUser, UserPreferences } from '../types/froyo';
 
 interface AccountDetailsModalProps {
@@ -109,6 +109,8 @@ interface ConfigurationModalProps {
   onClose: () => void;
   preferences: UserPreferences;
   onUpdatePreferences: (next: UserPreferences) => void;
+  onRequestNotificationPermission?: () => Promise<string | null>;
+  isNotificationsEnabled?: boolean;
 }
 
 export const ConfigurationModal: React.FC<ConfigurationModalProps> = ({
@@ -116,8 +118,29 @@ export const ConfigurationModal: React.FC<ConfigurationModalProps> = ({
   onClose,
   preferences,
   onUpdatePreferences,
+  onRequestNotificationPermission,
+  isNotificationsEnabled = false,
 }) => {
+  const [isPushActive, setIsPushActive] = useState(
+    isNotificationsEnabled ||
+      (typeof Notification !== 'undefined' && Notification.permission === 'granted')
+  );
+  const [isRequestingPush, setIsRequestingPush] = useState(false);
+
   if (!isOpen) return null;
+
+  const handleTogglePush = async () => {
+    if (!onRequestNotificationPermission) return;
+    setIsRequestingPush(true);
+    try {
+      const token = await onRequestNotificationPermission();
+      if (token) {
+        setIsPushActive(true);
+      }
+    } finally {
+      setIsRequestingPush(false);
+    }
+  };
 
   return (
     <div
@@ -167,6 +190,38 @@ export const ConfigurationModal: React.FC<ConfigurationModalProps> = ({
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Web Push & FCM Notification Toggle */}
+          <div className="p-3.5 rounded-2xl bg-froyo-canvas border border-froyo-border space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-froyo-text font-semibold">
+                <Bell className="w-4 h-4 text-froyo-accent" />
+                <span>Push Notifications (FCM)</span>
+              </div>
+              <button
+                type="button"
+                data-testid="fcm-notifications-toggle"
+                onClick={handleTogglePush}
+                disabled={isRequestingPush}
+                className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
+                  isPushActive
+                    ? 'bg-emerald-500 text-white shadow-sm'
+                    : 'bg-froyo-elevated border border-froyo-border text-froyo-muted hover:text-froyo-text'
+                }`}
+              >
+                {isRequestingPush
+                  ? 'Requesting...'
+                  : isPushActive
+                  ? 'Enabled ✓'
+                  : 'Enable Push'}
+              </button>
+            </div>
+            <p className="text-[11px] text-froyo-muted">
+              {isPushActive
+                ? 'Device registration token is registered in users/{uid}/fcm_tokens.'
+                : 'Receive background reminders & broadcast announcements from the maker.'}
+            </p>
           </div>
 
           <div className="p-3.5 rounded-2xl bg-froyo-elevated/70 border border-froyo-border space-y-2">
