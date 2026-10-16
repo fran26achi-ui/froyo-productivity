@@ -21,7 +21,9 @@ import {
   Sun,
   Tag as TagIcon,
   Timer,
+  Trash2,
   User,
+  X,
 } from 'lucide-react';
 import {
   AccessoryId,
@@ -90,6 +92,7 @@ export function App() {
 
   // Workspace Navigation & Filter State
   const [activeListScope, setActiveListScope] = useState<'weekly' | 'all' | string>('weekly');
+  const [isWeeklyBoardDeleted, setIsWeeklyBoardDeleted] = useState<boolean>(false);
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<string | null>(null);
   const [selectedTagFilter, setSelectedTagFilter] = useState<string | null>(null);
 
@@ -239,6 +242,17 @@ export function App() {
       unsubTags();
       unsubSessions();
     };
+  }, [activeUid]);
+
+  // Synchronize Weekly Board deletion preference across user accounts
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const deleted = window.localStorage.getItem(`froyo_weekly_deleted_${activeUid}`) === 'true';
+      setIsWeeklyBoardDeleted(deleted);
+      if (deleted && activeListScope === 'weekly') {
+        setActiveListScope('all');
+      }
+    }
   }, [activeUid]);
 
   const isDark = preferences.themeMode === 'dark';
@@ -510,10 +524,91 @@ export function App() {
     triggerToast(`Created tag "${trimmed}" (${newTagColor})`);
   };
 
+  const handleDeleteTag = async (tagId: string, tagName?: string) => {
+    const target = tags.find((t) => t.id === tagId);
+    const name = tagName || target?.name || 'Tag';
+
+    if (selectedTagFilter === tagId) {
+      setSelectedTagFilter(null);
+    }
+
+    setNewTaskSelectedTags((prev) => prev.filter((id) => id !== tagId));
+
+    await deleteUserDocument<PriorityTag>(activeUid, 'tags', tagId, getInitialTagsSeed);
+
+    // Clean up references from tasks
+    const tasksWithTag = tasks.filter((t) => t.tag_ids?.includes(tagId));
+    for (const task of tasksWithTag) {
+      const updatedTagIds = task.tag_ids.filter((id) => id !== tagId);
+      await upsertUserDocument<FroyoTask>(
+        activeUid,
+        'tasks',
+        { ...task, tag_ids: updatedTagIds, updated_at: new Date().toISOString() },
+        getInitialTasksSeed
+      );
+    }
+
+    triggerToast(`Tag "${name}" deleted`);
+  };
+
+  const handleDeleteWeeklyBoard = () => {
+    setIsWeeklyBoardDeleted(true);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(`froyo_weekly_deleted_${activeUid}`, 'true');
+    }
+    if (activeListScope === 'weekly') {
+      setActiveListScope('all');
+    }
+    triggerToast('Weekly Board list deleted');
+  };
+
+  const handleRestoreWeeklyBoard = () => {
+    setIsWeeklyBoardDeleted(false);
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(`froyo_weekly_deleted_${activeUid}`);
+    }
+    setShowListCreator(false);
+    setActiveListScope('weekly');
+    triggerToast('Weekly Board list restored');
+  };
+
+  const handleDeleteList = async (listId: string, listName?: string) => {
+    const target = lists.find((l) => l.id === listId);
+    const name = listName || target?.name || 'List';
+
+    if (activeListScope === listId) {
+      setActiveListScope('all');
+    }
+
+    await deleteUserDocument<TaskList>(activeUid, 'lists', listId, getInitialListsSeed);
+
+    // Re-assign tasks belonging to this list to unassigned (list_id = null)
+    // so user tasks are preserved under "All Tasks"
+    const affectedTasks = tasks.filter((t) => t.list_id === listId);
+    for (const task of affectedTasks) {
+      await upsertUserDocument<FroyoTask>(
+        activeUid,
+        'tasks',
+        { ...task, list_id: null, updated_at: new Date().toISOString() },
+        getInitialTasksSeed
+      );
+    }
+
+    triggerToast(`List "${name}" deleted`);
+  };
+
   const handleCreateCustomList = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = newListName.trim();
     if (!trimmed) return;
+
+    if (trimmed.toLowerCase() === 'weekly' || trimmed.toLowerCase() === 'weekly board') {
+      handleRestoreWeeklyBoard();
+      setNewListName('');
+      setShowListCreator(false);
+      return;
+    }
+
     const newList: TaskList = {
       id: `list-${Date.now()}`,
       name: trimmed,
@@ -991,22 +1086,38 @@ export function App() {
                 <div className="px-5 pt-4 pb-3 border-b border-froyo-border bg-froyo-surface space-y-3 flex-shrink-0">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <button
-                        type="button"
-                        data-testid="scope-weekly-btn"
-                        onClick={() => {
-                          setActiveListScope('weekly');
-                          setSelectedCalendarDate(null);
-                        }}
-                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                          activeListScope === 'weekly' && !selectedCalendarDate
-                            ? 'bg-froyo-accent text-white shadow-sm'
-                            : 'bg-froyo-elevated text-froyo-muted hover:text-froyo-text'
-                        }`}
-                      >
-                        <ListTodo className="w-3.5 h-3.5" />
-                        Weekly Board
-                      </button>
+                      {!isWeeklyBoardDeleted && (
+                        <div
+                          className={`inline-flex items-center rounded-xl text-xs font-bold transition-all ${
+                            activeListScope === 'weekly' && !selectedCalendarDate
+                              ? 'bg-froyo-accent text-white shadow-sm'
+                              : 'bg-froyo-elevated text-froyo-muted hover:text-froyo-text'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            data-testid="scope-weekly-btn"
+                            onClick={() => {
+                              setActiveListScope('weekly');
+                              setSelectedCalendarDate(null);
+                            }}
+                            className="inline-flex items-center gap-1.5 pl-3 pr-1.5 py-1.5 focus:outline-none"
+                          >
+                            <ListTodo className="w-3.5 h-3.5" />
+                            <span>Weekly Board</span>
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="delete-list-weekly"
+                            aria-label="Delete Weekly Board list"
+                            title="Delete Weekly Board list"
+                            onClick={handleDeleteWeeklyBoard}
+                            className="pr-2 pl-0.5 py-1.5 hover:text-red-500 transition-colors focus:outline-none cursor-pointer"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      )}
 
                       <button
                         type="button"
@@ -1025,29 +1136,43 @@ export function App() {
                       </button>
 
                       {lists.map((list) => (
-                        <button
+                        <div
                           key={list.id}
-                          type="button"
-                          data-testid={`scope-list-${list.id}`}
-                          onClick={() => {
-                            setActiveListScope(list.id);
-                            setSelectedCalendarDate(null);
-                          }}
-                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                          className={`inline-flex items-center rounded-xl text-xs font-bold transition-all ${
                             activeListScope === list.id && !selectedCalendarDate
                               ? 'bg-froyo-accent text-white shadow-sm'
                               : 'bg-froyo-elevated text-froyo-muted hover:text-froyo-text'
                           }`}
                         >
-                          <Archive className="w-3.5 h-3.5" />
-                          <span>{list.name}</span>
-                          {list.is_calendar_linked && (
-                            <span
-                              className="w-2 h-2 rounded-full bg-emerald-400"
-                              title="Linked to calendar"
-                            />
-                          )}
-                        </button>
+                          <button
+                            type="button"
+                            data-testid={`scope-list-${list.id}`}
+                            onClick={() => {
+                              setActiveListScope(list.id);
+                              setSelectedCalendarDate(null);
+                            }}
+                            className="inline-flex items-center gap-1.5 pl-3 pr-1.5 py-1.5 focus:outline-none"
+                          >
+                            <Archive className="w-3.5 h-3.5" />
+                            <span>{list.name}</span>
+                            {list.is_calendar_linked && (
+                              <span
+                                className="w-2 h-2 rounded-full bg-emerald-400"
+                                title="Linked to calendar"
+                              />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`delete-list-${list.id}`}
+                            aria-label={`Delete ${list.name} list`}
+                            title={`Delete ${list.name} list`}
+                            onClick={() => handleDeleteList(list.id, list.name)}
+                            className="pr-2 pl-0.5 py-1.5 hover:text-red-500 transition-colors focus:outline-none cursor-pointer"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
                       ))}
 
                       <button
@@ -1061,28 +1186,40 @@ export function App() {
 
                       {/* Optional Calendar Linking Action for Custom Lists */}
                       {activeCustomList && (
-                        <button
-                          type="button"
-                          data-testid="toggle-calendar-link-btn"
-                          onClick={() => handleToggleListCalendarLink(activeCustomList.id)}
-                          className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-all ${
-                            activeCustomList.is_calendar_linked
-                              ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
-                              : 'bg-froyo-elevated text-froyo-muted border-froyo-border hover:text-froyo-text'
-                          }`}
-                          title={
-                            activeCustomList.is_calendar_linked
-                              ? 'Tasks in this list are linked to the interactive calendar'
-                              : 'Click to link tasks in this list to the interactive calendar'
-                          }
-                        >
-                          <CalendarDays className="w-3.5 h-3.5 text-froyo-accent" />
-                          <span>
-                            {activeCustomList.is_calendar_linked
-                              ? 'Calendar Linked'
-                              : 'Link to Calendar'}
-                          </span>
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            data-testid="toggle-calendar-link-btn"
+                            onClick={() => handleToggleListCalendarLink(activeCustomList.id)}
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                              activeCustomList.is_calendar_linked
+                                ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                                : 'bg-froyo-elevated text-froyo-muted border-froyo-border hover:text-froyo-text'
+                            }`}
+                            title={
+                              activeCustomList.is_calendar_linked
+                                ? 'Tasks in this list are linked to the interactive calendar'
+                                : 'Click to link tasks in this list to the interactive calendar'
+                            }
+                          >
+                            <CalendarDays className="w-3.5 h-3.5 text-froyo-accent" />
+                            <span>
+                              {activeCustomList.is_calendar_linked
+                                ? 'Calendar Linked'
+                                : 'Link to Calendar'}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="delete-active-list-btn"
+                            onClick={() => handleDeleteList(activeCustomList.id, activeCustomList.name)}
+                            className="p-1.5 rounded-xl bg-froyo-elevated text-froyo-muted hover:text-red-500 border border-froyo-border transition-colors cursor-pointer"
+                            title={`Delete "${activeCustomList.name}" list`}
+                            aria-label={`Delete "${activeCustomList.name}" list`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -1107,25 +1244,41 @@ export function App() {
                       const style = getAccessibleTagStyles(tag.color, isDark);
                       const isSelected = selectedTagFilter === tag.id;
                       return (
-                        <button
+                        <div
                           key={tag.id}
-                          type="button"
-                          onClick={() => setSelectedTagFilter(isSelected ? null : tag.id)}
+                          data-testid={`tag-pill-${tag.id}`}
                           style={{
                             backgroundColor: style.backgroundColor,
                             borderColor: isSelected ? tag.color : style.borderColor,
                             color: style.color,
                           }}
-                          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border transition-transform ${
+                          className={`inline-flex items-center rounded-full text-[11px] font-semibold border transition-transform ${
                             isSelected ? 'ring-2 ring-froyo-accent scale-105' : ''
                           }`}
                         >
-                          <span
-                            className="w-1.5 h-1.5 rounded-full"
-                            style={{ backgroundColor: style.dotColor }}
-                          />
-                          {tag.name}
-                        </button>
+                          <button
+                            type="button"
+                            data-testid={`tag-filter-${tag.id}`}
+                            onClick={() => setSelectedTagFilter(isSelected ? null : tag.id)}
+                            className="inline-flex items-center gap-1.5 pl-2.5 pr-1 py-0.5 focus:outline-none"
+                          >
+                            <span
+                              className="w-1.5 h-1.5 rounded-full"
+                              style={{ backgroundColor: style.dotColor }}
+                            />
+                            <span>{tag.name}</span>
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`delete-tag-${tag.id}`}
+                            aria-label={`Delete tag ${tag.name}`}
+                            title={`Delete tag ${tag.name}`}
+                            onClick={() => handleDeleteTag(tag.id, tag.name)}
+                            className="pr-2 pl-0.5 py-0.5 hover:text-red-500 transition-colors focus:outline-none opacity-60 hover:opacity-100 cursor-pointer"
+                          >
+                            <X className="w-2.5 h-2.5" />
+                          </button>
+                        </div>
                       );
                     })}
                     <button
@@ -1172,21 +1325,37 @@ export function App() {
 
                   {/* Add List Form */}
                   {showListCreator && (
-                    <form onSubmit={handleCreateCustomList} className="flex items-center gap-2 pt-1">
-                      <input
-                        type="text"
-                        value={newListName}
-                        onChange={(e) => setNewListName(e.target.value)}
-                        placeholder="List name..."
-                        className="flex-1 text-xs px-3 py-1.5 rounded-xl bg-froyo-canvas border border-froyo-border text-froyo-text"
-                      />
-                      <button
-                        type="submit"
-                        className="px-3 py-1.5 rounded-xl text-xs font-bold bg-froyo-accent text-white"
-                      >
-                        Create
-                      </button>
-                    </form>
+                    <div className="space-y-2 pt-1">
+                      <form onSubmit={handleCreateCustomList} className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={newListName}
+                          onChange={(e) => setNewListName(e.target.value)}
+                          placeholder="List name..."
+                          className="flex-1 text-xs px-3 py-1.5 rounded-xl bg-froyo-canvas border border-froyo-border text-froyo-text"
+                        />
+                        <button
+                          type="submit"
+                          className="px-3 py-1.5 rounded-xl text-xs font-bold bg-froyo-accent text-white"
+                        >
+                          Create
+                        </button>
+                      </form>
+                      {isWeeklyBoardDeleted && (
+                        <div className="flex items-center justify-between text-xs px-2.5 py-1.5 rounded-xl bg-froyo-elevated/70 border border-froyo-border">
+                          <span className="text-froyo-muted">"Weekly Board" is deleted</span>
+                          <button
+                            type="button"
+                            onClick={handleRestoreWeeklyBoard}
+                            data-testid="restore-weekly-board-btn"
+                            className="text-xs font-bold text-froyo-accent hover:underline inline-flex items-center gap-1"
+                          >
+                            <Plus className="w-3 h-3" />
+                            Restore Weekly Board
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   )}
 
                   {/* Root Task Input Form */}

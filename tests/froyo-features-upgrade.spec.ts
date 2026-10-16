@@ -173,4 +173,66 @@ test.describe('Froyo V1 Studio — Comprehensive Modules Upgrade', () => {
     await expect(feedbackBanner).toBeVisible();
     await expect(feedbackBanner).toContainText('Broadcast successfully pushed');
   });
+
+  test('Module 6: Deleting Lists and Tags (All Tasks Protected, Weekly & Custom Lists & Tags Deletable)', async ({
+    page,
+  }) => {
+    // 1. Verify "All Tasks" CANNOT be deleted (no delete button exists)
+    const allTasksBtn = page.getByTestId('scope-all-btn');
+    await expect(allTasksBtn).toBeVisible();
+    await expect(page.locator('[data-testid="delete-list-all"]')).toHaveCount(0);
+    await expect(allTasksBtn.locator('[data-testid^="delete-"]')).toHaveCount(0);
+
+    // 2. Delete "Ideas" custom list
+    const ideasScopeBtn = page.getByTestId('scope-list-list-ideas');
+    await expect(ideasScopeBtn).toBeVisible();
+    const deleteIdeasBtn = page.getByTestId('delete-list-list-ideas');
+    await expect(deleteIdeasBtn).toBeVisible();
+    await deleteIdeasBtn.click();
+
+    // Verify "Ideas" list is removed
+    await expect(page.getByTestId('scope-list-list-ideas')).toHaveCount(0);
+    await expect(page.getByTestId('froyo-toast')).toContainText('List "Ideas" deleted');
+
+    // 3. Delete "Weekly Board" list
+    const weeklyBtn = page.getByTestId('scope-weekly-btn');
+    await expect(weeklyBtn).toBeVisible();
+    const deleteWeeklyBtn = page.getByTestId('delete-list-weekly');
+    await expect(deleteWeeklyBtn).toBeVisible();
+    await deleteWeeklyBtn.click();
+
+    // Verify "Weekly Board" is removed and active scope automatically switched to "All Tasks"
+    await expect(page.getByTestId('scope-weekly-btn')).toHaveCount(0);
+    await expect(page.getByTestId('froyo-toast')).toContainText('Weekly Board list deleted');
+    await expect(allTasksBtn).toHaveClass(/bg-froyo-accent/);
+
+    // 4. Test restoring "Weekly Board"
+    await page.locator('button[title="Create Standalone Custom List"]').click();
+    const restoreWeeklyBtn = page.getByTestId('restore-weekly-board-btn');
+    await expect(restoreWeeklyBtn).toBeVisible();
+    await restoreWeeklyBtn.click();
+    await expect(page.getByTestId('scope-weekly-btn')).toBeVisible();
+
+    // 5. Create a new custom list and delete it via delete-active-list-btn
+    await page.locator('button[title="Create Standalone Custom List"]').click();
+    await page.locator('input[placeholder="List name..."]').fill('Temporary Sprint');
+    await page.getByRole('button', { name: 'Create', exact: true }).click();
+
+    const activeDeleteBtn = page.getByTestId('delete-active-list-btn');
+    await expect(activeDeleteBtn).toBeVisible();
+    await activeDeleteBtn.click();
+    await expect(page.getByText('Temporary Sprint')).toHaveCount(0);
+    await expect(allTasksBtn).toHaveClass(/bg-froyo-accent/);
+
+    // 6. Delete Priority Tag "Urgent"
+    const urgentTagPill = page.getByTestId('tag-pill-tag-urgent');
+    await expect(urgentTagPill).toBeVisible();
+    const deleteUrgentBtn = page.getByTestId('delete-tag-tag-urgent');
+    await expect(deleteUrgentBtn).toBeVisible();
+    await deleteUrgentBtn.click();
+
+    // Verify "Urgent" tag is removed from tags bar
+    await expect(page.getByTestId('tag-pill-tag-urgent')).toHaveCount(0);
+    await expect(page.getByTestId('froyo-toast')).toContainText('Tag "Urgent" deleted');
+  });
 });
