@@ -1374,8 +1374,8 @@ export function App() {
         onClose={() => setIsThemeModalOpen(false)}
         preferences={preferences}
         onUpdatePreferences={setPreferences}
-        onSaveThemeToCloud={async (customTheme, mode) => {
-          await saveUserThemeToFirestore(activeUid, customTheme, mode);
+        onSaveThemeToCloud={async () => {
+          await saveUserThemeToFirestore(activeUid, preferences.customTheme, preferences.themeMode);
           triggerToast('Custom aesthetic saved to your cloud profile!');
         }}
       />
